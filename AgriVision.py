@@ -172,7 +172,7 @@ with st.sidebar:
 
 # --- Main App ---
 
-tab1, tab2 = st.tabs(["🎥 Live Stream", "📤 Upload Image/Video"])
+tab1, tab2 = st.tabs(["Live Stream", "Upload Image/Video"])
 
 with tab1:
     col_video, col_info = st.columns([2, 1])
