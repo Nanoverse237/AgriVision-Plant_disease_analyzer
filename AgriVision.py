@@ -131,7 +131,7 @@ def display_report(result):
     """, unsafe_allow_html=True)
 
     if not result.get('is_healthy') and result.get('treatments'):
-        st.subheader("💊 Recommended Treatments")
+        st.subheader("Recommended Treatments")
         for treatment in result['treatments']:
             st.info(treatment)
 # --- Main UI ---
