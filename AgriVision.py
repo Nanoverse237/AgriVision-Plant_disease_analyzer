@@ -3,10 +3,13 @@ import cv2
 import time
 import os
 import json
+import base64
 from PIL import Image
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor
 from google import genai
 from google.genai import types
+
 # --- Configuration ---
 st.set_page_config(
     page_title="AgriVision - AI Crop Diagnostics",
@@ -38,154 +41,210 @@ st.markdown("""
 # Get key from environment variable
 api_key = os.environ.get("GEMINI_API_KEY")
 
-# --- Side Bar ---
+# --- Initialization ---
+if 'api_key' not in st.session_state:
+    st.session_state.api_key = os.environ.get("GEMINI_API_KEY", "")
+
+if 'analysis_result' not in st.session_state:
+    st.session_state.analysis_result = None
+
+if 'thread_pool' not in st.session_state:
+    st.session_state.thread_pool = ThreadPoolExecutor(max_workers=1)
+
+# --- Helper Functions ---
+
+def get_gemini_client(api_key):
+    if not api_key:
+        return None
+    return genai.Client(api_key=api_key)
+
+def analyze_image(api_key: str, image):
+    """
+    Sends an image (PIL or numpy array) to Gemini for disease analysis.
+    Creates its own client to be safe in background threads.
+    """
+    try:
+        client = get_gemini_client(api_key)
+        if client is None:
+            return {"error": "Missing API key. Please provide GEMINI_API_KEY."}
+
+        # Convert numpy array (OpenCV) to PIL
+        if isinstance(image, np.ndarray):
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            image = Image.fromarray(image)
+
+        prompt = """
+You are AgriVision, an expert plant pathologist. Analyze this image.
+1. Identify the plant.
+2. Detect if there is a disease, pest, or nutrient deficiency.
+3. If healthy, state "Healthy".
+4. Provide treatment recommendations if an issue is found.
+
+Return the result as a raw JSON object with this schema:
+{
+  "plant": "str",
+  "condition": "str",
+  "is_healthy": bool,
+  "confidence": "float (0-1)",
+  "description": "str (concise)",
+  "treatments": ["str", "str"]
+}
+"""
+
+        cfg = types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema={
+                "type": "object",
+                "properties": {
+                    "plant": {"type": "string"},
+                    "condition": {"type": "string"},
+                    "is_healthy": {"type": "boolean"},
+                    "confidence": {"type": "number"},
+                    "description": {"type": "string"},
+                    "treatments": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["plant", "condition", "is_healthy", "confidence", "description", "treatments"],
+            },
+        )
+
+        response = client.models.generate_content(
+            model="gemini-3-pro-preview",
+            contents=[image, prompt],
+            config=cfg,
+        )
+
+        return json.loads(response.text)
+
+    except Exception as e:
+        return {"error": str(e)}
+
+def display_report(result, confidence_threshold: float = 0.0):
+    if not result:
+        st.info("No analysis yet.")
+        return
+
+    if "error" in result:
+        st.error(f"Analysis Failed: {result['error']}")
+        return
+
+    conf = float(result.get("confidence", 0.0))
+    if conf < confidence_threshold:
+        st.warning(f"Low confidence result ({conf:.2f}) — try a clearer close-up photo/lighting.")
+        # Still show what it guessed:
+        # return  # optionally stop here
+
+    color = "green" if result.get("is_healthy") else "red"
+
+    st.markdown(f"""
+    <div class="report-box">
+        <div class="disease-title" style="color: {color}">
+            {result.get('condition', 'Unknown Condition')}
+        </div>
+        <p><b>Plant:</b> {result.get('plant', 'Unknown')} |
+           <b>Confidence:</b> {conf:.2f}</p>
+        <p>{result.get('description', '')}</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if not result.get("is_healthy") and result.get("treatments"):
+        st.subheader("💊 Recommended Treatments")
+        for treatment in result["treatments"]:
+            st.info(treatment)
+
+# --- Sidebar ---
 with st.sidebar:
     st.title("AgriVision")
     st.write("Real-time AI Crop Analyzer for Better Crop Production")
     
-    if not api_key:
-        api_key = st.text_input("Enter Google API Key", type="password")
+    if 'api_key' not in st.session_state:
+        st.session_state.api_key = os.environ.get("GEMINI_API_KEY", "")
+
+        st.session_state.api_key = st.text_input(
+        "Enter Google API Key",
+        type="password",
+        value=st.session_state.api_key
+    )
         
     st.divider()
     st.write("### Settings")
     analysis_interval = st.slider("Analysis Interval (seconds)", 1, 10, 3)
     confidence_threshold = st.slider("Confidence Threshold", 0.0, 1.0, 0.6)
 
-# --- Helper Functions ---
+# --- Main App ---
 
-def get_gemini_client():
-    if not api_key:
-        return None
-    return genai.Client(api_key=api_key)
-
-def analyze_image(client, image):
-    """
-    Sends an image (PIL or numpy array) to Gemini for disease analysis.
-    """
-    try:
-        # Convert numpy array (OpenCV) to PIL
-        if isinstance(image, np.ndarray):
-            # RGB conversion
-            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            image = Image.fromarray(image)
-
-        prompt = """
-        You are AgriVision, an expert plant pathologist. Analyze this image.
-        1. Identify the plant.
-        2. Detect if there is a disease, pest, or nutrient deficiency.
-        3. If healthy, state "Healthy".
-        4. Provide treatment recommendations if an issue is found.
-        
-        Return the result as a raw JSON object with this schema:
-        {
-            "plant": "str",
-            "condition": "str", 
-            "is_healthy": bool,
-            "confidence": "float (0-1)",
-            "description": "str (concise)",
-            "treatments": ["str", "str"]
-        }
-        """
-
-        response = client.models.generate_content(
-            model='gemini-3-pro-preview', 
-            contents=[image, prompt],
-            config={
-                'response_mime_type': 'application/json',
-                'response_schema': {
-                    'type': types.Type.OBJECT,
-                    'properties': {
-                        'plant': {'type': types.Type.STRING},
-                        'condition': {'type': types.Type.STRING},
-                        'is_healthy': {'type': types.Type.BOOLEAN},
-                        'confidence': {'type': types.Type.NUMBER},
-                        'description': {'type': types.Type.STRING},
-                        'treatments': {
-                            'type': types.Type.ARRAY,
-                            'items': {'type': types.Type.STRING}
-                        }
-                    }
-                }
-            }
-        )
-        return json.loads(response.text)
-    except Exception as e:
-        return {"error": str(e)}
-
-def display_report(result):
-    if "error" in result:
-        st.error(f"Analysis Failed: {result['error']}")
-        return
-
-    color = "green" if result.get('is_healthy') else "red"
-    
-    st.markdown(f"""
-    <div class="report-box">
-        <div class="disease-title" style="color: {color}">
-            {result.get('condition', 'Unknown Condition')}
-        </div>
-        <p><b>Plant:</b> {result.get('plant', 'Unknown')} | 
-           <b>Confidence:</b> {result.get('confidence', 0):.2f}</p>
-        <p>{result.get('description', '')}</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-    if not result.get('is_healthy') and result.get('treatments'):
-        st.subheader("Recommended Treatments")
-        for treatment in result['treatments']:
-            st.info(treatment)
-# --- Main UI ---
-
-if not api_key:
-    st.warning("Please enter your Google API Key in the sidebar to continue.")
-    st.stop()
-
-client = get_gemini_client()
-
-tab1, tab2 = st.tabs(["Live Stream Analysis", "Upload Image/Video"])
+tab1, tab2 = st.tabs(["🎥 Live Stream", "📤 Upload Image/Video"])
 
 with tab1:
-    st.header("Live Video Analysis")
-    st.write("This mode uses your local webcam to analyze crops in real-time.")
+    col_video, col_info = st.columns([2, 1])
     
-    run_camera = st.checkbox("Start Camera Stream")
-    
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
+    with col_video:
+        st.subheader("Live Feed")
+        run_camera = st.checkbox("Start Camera", value=False)
         st_frame = st.empty()
-        
-    with col2:
+
+    with col_info:
+        st.subheader("Real-time Analysis")
         st_report = st.empty()
 
+    # Logic for non-blocking camera loop
     if run_camera:
-        # NOTE: cv2.VideoCapture(0) works on LOCAL machines (Jupyter/Localhost).
-        # It may not work on cloud hosting (Streamlit Cloud) without webrtc.
         cap = cv2.VideoCapture(0)
-        last_analysis_time = 0
         
-        while run_camera:
-            ret, frame = cap.read()
-            if not ret:
-                st.error("Failed to capture video frame.")
-                break
+        if not cap.isOpened():
+            st.error("Could not open camera. Please ensure no other app is using it.")
+        else:
+            last_analysis_time = 0
+            future = None
             
-            # Display frame
-            st_frame.image(frame, channels="BGR", use_container_width=True)
-            
-            # Analyze every N seconds
-            current_time = time.time()
-            if current_time - last_analysis_time > analysis_interval:
-                with st_report.container():
-                    with st.spinner("Analyzing frame..."):
-                        result = analyze_image(client, frame)
-                        display_report(result)
-                last_analysis_time = current_time
-            
-            # Small sleep to reduce CPU usage
-            time.sleep(0.1)
-            
-        cap.release()
+            # Helper to display last known result immediately before loop
+            with st_report.container():
+                display_report(st.session_state.analysis_result, confidence_threshold)
+
+            try:
+                while run_camera:
+                    ret, frame = cap.read()
+                    if not ret:
+                        st.error("Failed to capture video frame.")
+                        break
+
+                    # 1. Display Frame (Main Thread - fast)
+                    # Convert BGR to RGB for st.image
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    st_frame.image(frame_rgb, channels="RGB", use_container_width=True)
+
+                    # 2. Check Background Analysis Status
+                    current_time = time.time()
+                    
+                    # If we have a running task, checks if it's done
+                    if future and future.done():
+                        result = future.result()
+                        st.session_state.analysis_result = result
+                        future = None # Reset
+                        
+                        # Update UI with new result
+                        with st_report.container():
+                            with st.spinner("Analyzing frame..."):
+                                display_report(result)
+
+                    # 3. Schedule New Analysis if idle and time passed
+                    if future is None and (current_time - last_analysis_time > analysis_interval):
+                        # Submit task to thread pool
+                        # We pass a copy of the frame to avoid race conditions with the video loop
+                        frame_copy = frame.copy()
+                        future = st.session_state.thread_pool.submit(
+                            analyze_image, 
+                            st.session_state.api_key, 
+                            frame_copy
+                        )
+                        last_analysis_time = current_time
+
+                    # Small sleep to yield execution to other threads/UI
+                    time.sleep(0.03) 
+                    
+            finally:
+                cap.release()
+                if future:
+                    future.cancel()
 
 with tab2:
     st.header("Upload Analysis")
@@ -199,7 +258,7 @@ with tab2:
             
             if st.button("Analyze Image"):
                 with st.spinner("Analyzing..."):
-                    result = analyze_image(client, image)
+                    result = analyze_image(st.session_state.api_key, image)
                     display_report(result)
         
         # If it's a video
@@ -228,7 +287,7 @@ with tab2:
                         prompt = "Analyze this video of a crop. Identify any diseases present in the footage and suggest treatments. Return JSON."
                         
                         response = client.models.generate_content(
-                            model='gemini-2.0-flash-exp',
+                            model='gemini-3-pro-preview',
                             contents=[video_file, prompt],
                              config={
                                 'response_mime_type': 'application/json',
@@ -249,3 +308,4 @@ with tab2:
                             }
                         )
                         display_report(json.loads(response.text))
+
