@@ -1,5 +1,6 @@
 streamlit
 google-genai
+streamlit-webrtc
 opencv-python-headless
 pillow
 numpy
