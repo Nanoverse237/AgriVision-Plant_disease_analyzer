@@ -184,13 +184,13 @@ with st.sidebar:
     confidence_threshold = st.slider("Confidence Threshold", 0.0, 1.0, 0.6)
 
 # --- Main App ---
-tab1, tab2 = st.tabs(["🎥 Live Stream", "📤 Upload Image/Video"])
+tab1, tab2 = st.tabs(["Live Stream", "Upload Image/Video"])
 
 with tab1:
     col_video, col_info = st.columns([2, 1])
 
     with col_video:
-        st.subheader("Live Feed (WebRTC)")
+        st.subheader("Live Feed")
         ctx = webrtc_streamer(
             key="agrivision-live",
             mode=WebRtcMode.SENDRECV,
