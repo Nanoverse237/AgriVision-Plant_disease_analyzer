@@ -1,4 +1,4 @@
-import streamlit as st
+"""import streamlit as st
 import cv2
 import time
 import os
@@ -210,7 +210,7 @@ with tab1:
 
         # Update UI with last known result immediately
         with st_report.container():
-            display_report(st.session_state.analysis_result, confidence_threshold)
+            display_report(st.session_state.analysis_result, confidence_threshold)"""
 import streamlit as st
 import cv2
 import time
