@@ -130,6 +130,87 @@ def display_report(result, confidence_threshold: float = 0.0):
 
     conf = float(result.get("confidence", 0.0))
     if conf < confidence_threshold:
+        st.warning(f"Low confidence result ({conf:.2f}) — try a clearer close-up photo/lighting.")
+        # Still show what it guessed:
+        # return  # optionally stop here
+
+    color = "green" if result.get("is_healthy") else "red"
+
+    st.markdown(f"""
+    <div class="report-box">
+        <div class="disease-title" style="color: {color}">
+            {result.get('condition', 'Unknown Condition')}
+        </div>
+        <p><b>Plant:</b> {result.get('plant', 'Unknown')} |
+           <b>Confidence:</b> {conf:.2f}</p>
+        <p>{result.get('description', '')}</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if not result.get("is_healthy") and result.get("treatments"):
+        st.subheader("💊 Recommended Treatments")
+        for treatment in result["treatments"]:
+            st.info(treatment)
+
+# --- streamlit-webrtc: Video Processor ---
+class VideoProcessor(VideoProcessorBase):
+    def recv(self, frame):
+        img = frame.to_ndarray(format="bgr24")
+        st.session_state.latest_frame_bgr = img
+        return frame
+
+
+RTC_CONFIGURATION = RTCConfiguration(
+    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+)
+
+# --- Sidebar ---
+with st.sidebar:
+    st.title("AgriVision")
+    st.write("Real-time AI Crop Analyzer for Better Crop Production")
+    
+    if 'api_key' not in st.session_state:
+        st.session_state.api_key = os.environ.get("GEMINI_API_KEY", "")
+
+        st.session_state.api_key = st.text_input(
+        "Enter Google API Key",
+        type="password",
+        value=st.session_state.api_key
+    )
+        
+    st.divider()
+    st.write("### Settings")
+    analysis_interval = st.slider("Analysis Interval (seconds)", 1, 10, 3)
+    confidence_threshold = st.slider("Confidence Threshold", 0.0, 1.0, 0.6)
+
+# --- Main App ---
+tab1, tab2 = st.tabs(["Live Stream", "Upload Image/Video"])
+
+with tab1:
+    col_video, col_info = st.columns([2, 1])
+
+    with col_video:
+        st.subheader("Live Feed")
+        ctx = webrtc_streamer(
+            key="agrivision-live",
+            mode=WebRtcMode.SENDRECV,
+            rtc_configuration=RTC_CONFIGURATION,
+            media_stream_constraints={"video": True, "audio": False},
+            video_processor_factory=VideoProcessor,
+            async_processing=True,
+        )
+
+    with col_info:
+        st.subheader("Real-time Analysis")
+        st_report = st.empty()
+
+    # --- Analysis loop (Streamlit-friendly "tick") ---
+    if ctx.state.playing:
+        now = time.time()
+
+        # Update UI with last known result immediately
+        with st_report.container():
+            display_report(st.session_state.analysis_result, confidence_threshold)
 import streamlit as st
 import cv2
 import time
