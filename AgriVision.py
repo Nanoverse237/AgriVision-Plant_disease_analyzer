@@ -6,6 +6,7 @@ import json
 import base64
 from PIL import Image
 import numpy as np
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration, WebRtcMode
 from concurrent.futures import ThreadPoolExecutor
 from google import genai
 from google.genai import types
@@ -151,6 +152,18 @@ def display_report(result, confidence_threshold: float = 0.0):
         for treatment in result["treatments"]:
             st.info(treatment)
 
+# --- streamlit-webrtc: Video Processor ---
+class VideoProcessor(VideoProcessorBase):
+    def recv(self, frame):
+        img = frame.to_ndarray(format="bgr24")
+        st.session_state.latest_frame_bgr = img
+        return frame
+
+
+RTC_CONFIGURATION = RTCConfiguration(
+    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+)
+
 # --- Sidebar ---
 with st.sidebar:
     st.title("AgriVision")
@@ -171,80 +184,57 @@ with st.sidebar:
     confidence_threshold = st.slider("Confidence Threshold", 0.0, 1.0, 0.6)
 
 # --- Main App ---
-
-tab1, tab2 = st.tabs(["Live Stream", "Upload Image/Video"])
+tab1, tab2 = st.tabs(["🎥 Live Stream", "📤 Upload Image/Video"])
 
 with tab1:
     col_video, col_info = st.columns([2, 1])
-    
+
     with col_video:
-        st.subheader("Live Feed")
-        run_camera = st.checkbox("Start Camera", value=False)
-        st_frame = st.empty()
+        st.subheader("Live Feed (WebRTC)")
+        ctx = webrtc_streamer(
+            key="agrivision-live",
+            mode=WebRtcMode.SENDRECV,
+            rtc_configuration=RTC_CONFIGURATION,
+            media_stream_constraints={"video": True, "audio": False},
+            video_processor_factory=VideoProcessor,
+        )
 
     with col_info:
         st.subheader("Real-time Analysis")
         st_report = st.empty()
 
-    # Logic for non-blocking camera loop
-    if run_camera:
-        cap = cv2.VideoCapture(0)
-        
-        if not cap.isOpened():
-            st.error("Could not open camera. Please ensure no other app is using it.")
-        else:
-            last_analysis_time = 0
-            future = None
-            
-            # Helper to display last known result immediately before loop
+    # --- Analysis loop (Streamlit-friendly "tick") ---
+    if ctx.state.playing:
+        now = time.time()
+
+        # Update UI with last known result immediately
+        with st_report.container():
+            display_report(st.session_state.analysis_result, confidence_threshold)
+
+        # If a background task finished, collect result
+        if st.session_state.future and st.session_state.future.done():
+            st.session_state.analysis_result = st.session_state.future.result()
+            st.session_state.future = None
+
             with st_report.container():
                 display_report(st.session_state.analysis_result, confidence_threshold)
 
-            try:
-                while run_camera:
-                    ret, frame = cap.read()
-                    if not ret:
-                        st.error("Failed to capture video frame.")
-                        break
-
-                    # 1. Display Frame (Main Thread - fast)
-                    # Convert BGR to RGB for st.image
-                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    st_frame.image(frame_rgb, channels="RGB", use_container_width=True)
-
-                    # 2. Check Background Analysis Status
-                    current_time = time.time()
-                    
-                    # If we have a running task, checks if it's done
-                    if future and future.done():
-                        result = future.result()
-                        st.session_state.analysis_result = result
-                        future = None # Reset
-                        
-                        # Update UI with new result
-                        with st_report.container():
-                            with st.spinner("Analyzing frame..."):
-                                display_report(result)
-
-                    # 3. Schedule New Analysis if idle and time passed
-                    if future is None and (current_time - last_analysis_time > analysis_interval):
-                        # Submit task to thread pool
-                        # We pass a copy of the frame to avoid race conditions with the video loop
-                        frame_copy = frame.copy()
-                        future = st.session_state.thread_pool.submit(
-                            analyze_image, 
-                            st.session_state.api_key, 
-                            frame_copy
-                        )
-                        last_analysis_time = current_time
-
-                    # Small sleep to yield execution to other threads/UI
-                    time.sleep(0.03) 
-                    
-            finally:
-                cap.release()
-                if future:
-                    future.cancel()
+        # Schedule new analysis if interval passed and we have a frame
+        if (
+            st.session_state.future is None
+            and (now - st.session_state.last_analysis_time) >= analysis_interval
+            and st.session_state.latest_frame_bgr is not None
+        ):
+            frame_copy = st.session_state.latest_frame_bgr.copy()
+            st.session_state.future = st.session_state.thread_pool.submit(
+                analyze_image,
+                st.session_state.api_key,
+                frame_copy
+            )
+            st.session_state.last_analysis_time = now
+    else:
+        with st_report.container():
+            st.info("Click **Start** above and allow camera permissions in your browser.")
 
 with tab2:
     st.header("Upload Analysis")
