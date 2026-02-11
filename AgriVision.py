@@ -3,138 +3,6 @@ import cv2
 import time
 import os
 import json
-import base64
-from PIL import Image
-import numpy as np
-from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration, WebRtcMode
-from concurrent.futures import ThreadPoolExecutor
-from google import genai
-from google.genai import types
-
-# --- Configuration ---
-st.set_page_config(
-    page_title="AgriVision - AI Crop Diagnostics",
-    page_icon="🌿",
-    layout="wide"
-)
-
-# --- Styles ---
-st.markdown("""
-<style>
-    .report-box {
-        border: 2px solid #e0e7ff;
-        padding: 20px;
-        border-radius: 10px;
-        background-color: #f0fdf4;
-    }
-    .disease-title {
-        color: #166534;
-        font-size: 24px;
-        font-weight: bold;
-    }
-    .confidence-high {
-        color: #15803d;
-        font-weight: bold;
-    }
-</style>
-""", unsafe_allow_html=True)
-# --- API Setup ---
-# Get key from environment variable
-api_key = os.environ.get("GEMINI_API_KEY")
-
-# --- Initialization ---
-if 'api_key' not in st.session_state:
-    st.session_state.api_key = os.environ.get("GEMINI_API_KEY", "")
-
-if 'analysis_result' not in st.session_state:
-    st.session_state.analysis_result = None
-
-if 'thread_pool' not in st.session_state:
-    st.session_state.thread_pool = ThreadPoolExecutor(max_workers=1)
-
-# --- Helper Functions ---
-
-def get_gemini_client(api_key):
-    if not api_key:
-        return None
-    return genai.Client(api_key=api_key)
-
-def analyze_image(api_key: str, image):
-    """
-    Sends an image (PIL or numpy array) to Gemini for disease analysis.
-    Creates its own client to be safe in background threads.
-    """
-    try:
-        client = get_gemini_client(api_key)
-        if client is None:
-            return {"error": "Missing API key. Please provide GEMINI_API_KEY."}
-
-        # Convert numpy array (OpenCV) to PIL
-        if isinstance(image, np.ndarray):
-            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            image = Image.fromarray(image)
-
-        prompt = """
-You are AgriVision, an expert plant pathologist. Analyze this image.
-1. Identify the plant.
-2. Detect if there is a disease, pest, or nutrient deficiency.
-3. If healthy, state "Healthy".
-4. Provide treatment recommendations if an issue is found.
-
-Return the result as a raw JSON object with this schema:
-{
-  "plant": "str",
-  "condition": "str",
-  "is_healthy": bool,
-  "confidence": "float (0-1)",
-  "description": "str (concise)",
-  "treatments": ["str", "str"]
-}
-"""
-
-        cfg = types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema={
-                "type": "object",
-                "properties": {
-                    "plant": {"type": "string"},
-                    "condition": {"type": "string"},
-                    "is_healthy": {"type": "boolean"},
-                    "confidence": {"type": "number"},
-                    "description": {"type": "string"},
-                    "treatments": {"type": "array", "items": {"type": "string"}},
-                },
-                "required": ["plant", "condition", "is_healthy", "confidence", "description", "treatments"],
-            },
-        )
-
-        response = client.models.generate_content(
-            model="gemini-3-pro-preview",
-            contents=[image, prompt],
-            config=cfg,
-        )
-
-        return json.loads(response.text)
-
-    except Exception as e:
-        return {"error": str(e)}
-
-def display_report(result, confidence_threshold: float = 0.0):
-    if not result:
-        st.info("No analysis yet.")
-        return
-
-    if "error" in result:
-        st.error(f"Analysis Failed: {result['error']}")
-        return
-
-    conf = float(result.get("confidence", 0.0))
-    if conf < confidence_threshold:
-import streamlit as st
-import cv2
-import time
-import os
-import json
 import tempfile
 import threading
 from PIL import Image, UnidentifiedImageError
@@ -426,7 +294,7 @@ with tab1:
     col_video, col_info = st.columns([2, 1])
 
     with col_video:
-        st.subheader("Live Feed (WebRTC)")
+        st.subheader("Live Feed")
         ctx = webrtc_streamer(
             key="agrivision-live",
             mode=WebRtcMode.SENDRECV,
