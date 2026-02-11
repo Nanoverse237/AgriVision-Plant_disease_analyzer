@@ -294,7 +294,7 @@ with tab1:
     col_video, col_info = st.columns([2, 1])
 
     with col_video:
-        st.subheader("Live Feed (WebRTC)")
+        st.subheader("Live Feed")
         ctx = webrtc_streamer(
             key="agrivision-live",
             mode=WebRtcMode.SENDRECV,
